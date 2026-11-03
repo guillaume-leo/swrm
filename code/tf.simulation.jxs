@@ -1,0 +1,46 @@
+<jittershader name="TF.SIMULATION">
+	<description>My particle simulator</description>
+	<param name="position" type="vec3" state="POSITION" />
+	<param name="velocity" type="vec3" state="NORMAL" />
+	<param name="color" type="vec4" state="COLOR" />
+	<param name="speed" type="float" default="0.0" />
+	<param name="drag" type="float" default="1.0" />
+	<language name="glsl" version="1.5">
+		<bind param="position" program="vp" />
+		<bind param="velocity" program="vp" />
+		<bind param="color" program="vp" />
+		<bind param="speed" program="vp" />
+		<bind param="drag" program="vp" />
+		<program name="vp" type="vertex">
+<![CDATA[
+#version 330 core
+uniform float speed;
+uniform float drag;
+in vec3 position;
+in vec3 velocity;
+in vec4 color;
+
+out vec3 position_out;
+out vec3 velocity_out;
+out vec4 color_out;
+
+void main() {	
+	// locomotion handled per vertex first
+	position_out = position + vec3(speed,speed,0);
+	// use the drag param to create friction
+	velocity_out = velocity * drag;
+	// color : ici on la fait évoluer selon la vitesse (exemple)
+	color_out = vec4(color.rgb, clamp(length(velocity_out), 0.0, 1.0));
+}
+]]>
+		</program>
+		<program name="fp" type="fragment">
+		<![CDATA[
+#version 330 core
+void main() 
+{
+}
+		]]>
+		</program>
+	</language>
+</jittershader>
