@@ -5,17 +5,27 @@
 	<param name="color" type="vec4" state="COLOR" />
 	<param name="speed" type="float" default="0.0" />
 	<param name="drag" type="float" default="1.0" />
+	<param name="aspect" type="float" default="1.0" />
+
+	<param name="trail_tex" type="int" default="0" />
 	<language name="glsl" version="1.5">
 		<bind param="position" program="vp" />
 		<bind param="velocity" program="vp" />
 		<bind param="color" program="vp" />
 		<bind param="speed" program="vp" />
 		<bind param="drag" program="vp" />
+		<bind param="aspect" program="vp" />
+
+		<bind param="trail_tex" program="vp" />
 		<program name="vp" type="vertex">
 <![CDATA[
 #version 330 core
 uniform float speed;
 uniform float drag;
+uniform float aspect;
+
+uniform sampler2D trail_tex;
+
 in vec3 position;
 in vec3 velocity;
 in vec4 color;
@@ -24,13 +34,21 @@ out vec3 position_out;
 out vec3 velocity_out;
 out vec4 color_out;
 
+vec4 sampleTexAtPos(vec3 pos, sampler2D tex)
+{
+	vec2 uv = pos.xy;
+	uv.x = uv.x / aspect;
+	uv = uv * 0.5 + 0.5;
+	return texture(tex, uv);
+}
+
 void main() {	
 	// locomotion handled per vertex first
-	position_out = position + vec3(speed,speed,0);
+	position_out = position + vec3(velocity.x * speed, velocity.y * speed, 0);
 	// use the drag param to create friction
 	velocity_out = velocity * drag;
 	// color : ici on la fait évoluer selon la vitesse (exemple)
-	color_out = vec4(color.rgb, clamp(length(velocity_out), 0.0, 1.0));
+	color_out = vec4(sampleTexAtPos(position, trail_tex).rgb, 1.0);
 }
 ]]>
 		</program>

@@ -2,7 +2,7 @@
     "name": "swrm",
     "version": 1,
     "creationdate": 3876237329,
-    "modificationdate": 3876237783,
+    "modificationdate": 3876669030,
     "viewrect": [ 65.0, 208.0, 300.0, 500.0 ],
     "autoorganize": 1,
     "hideprojectwindow": 0,
@@ -16,8 +16,18 @@
                 "toplevel": 1
             }
         },
+        "media": {
+            "mire.jpg": {
+                "kind": "imagefile",
+                "local": 1
+            }
+        },
         "code": {
             "tf.simulation.jxs": {
+                "kind": "shader",
+                "local": 1
+            },
+            "mesh.shader.jxs": {
                 "kind": "shader",
                 "local": 1
             }
