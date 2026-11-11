@@ -1,28 +1,35 @@
 <jittershader name="TF.SIMULATION">
-	<description>My particle simulator</description>
-	<param name="position" type="vec3" state="POSITION" />
-	<param name="velocity" type="vec3" state="NORMAL" />
-	<param name="color" type="vec4" state="COLOR" />
-	<param name="speed" type="float" default="0.0" />
-	<param name="drag" type="float" default="1.0" />
-	<param name="aspect" type="float" default="1.0" />
+    <description>My particle simulator</description>
+    // TF BUFFERS
+    <param name="position" type="vec3" state="POSITION" />
+    <param name="velocity" type="vec3" state="NORMAL" />
+    <param name="color" type="vec4" state="COLOR" />
 
-	<param name="trail_tex" type="int" default="0" />
-	<language name="glsl" version="1.5">
-		<bind param="position" program="vp" />
-		<bind param="velocity" program="vp" />
-		<bind param="color" program="vp" />
-		<bind param="speed" program="vp" />
-		<bind param="drag" program="vp" />
-		<bind param="aspect" program="vp" />
+    // PARAMETERS
+    <param name="speed" type="float" default="0.02" />
+    <param name="drag" type="float" default="1.0" />
+    <param name="aspect" type="float" default="1.0" />
+    <param name="boundary_mode" type="float" default="0" />
 
-		<bind param="trail_tex" program="vp" />
-		<program name="vp" type="vertex">
+    // TEXTURES 
+    <param name="trail_tex" type="int" default="0" />
+    <language name="glsl" version="1.5">
+        <bind param="position" program="vp" />
+        <bind param="velocity" program="vp" />
+        <bind param="color" program="vp" />
+        <bind param="speed" program="vp" />
+        <bind param="drag" program="vp" />
+        <bind param="aspect" program="vp" />
+        <bind param="boundary_mode" program="vp" />
+
+        <bind param="trail_tex" program="vp" />
+        <program name="vp" type="vertex">
 <![CDATA[
 #version 330 core
 uniform float speed;
 uniform float drag;
 uniform float aspect;
+uniform float boundary_mode;   
 
 uniform sampler2D trail_tex;
 
@@ -34,31 +41,59 @@ out vec3 position_out;
 out vec3 velocity_out;
 out vec4 color_out;
 
+const float BOUNDARY_WRAP   = 0;
+const float BOUNDARY_BOUNCE = 1;
+
 vec4 sampleTexAtPos(vec3 pos, sampler2D tex)
 {
-	vec2 uv = pos.xy;
-	uv.x = uv.x / aspect;
-	uv = uv * 0.5 + 0.5;
-	return texture(tex, uv);
+    vec2 uv = pos.xy;
+    uv.x = uv.x / aspect;
+    uv = uv * 0.5 + 0.5;
+    uv.y = 1.0 - uv.y;
+    return texture(tex, uv);
 }
 
-void main() {	
-	// locomotion handled per vertex first
-	position_out = position + vec3(velocity.x * speed, velocity.y * speed, 0);
-	// use the drag param to create friction
-	velocity_out = velocity * drag;
-	// color : ici on la fait évoluer selon la vitesse (exemple)
-	color_out = vec4(sampleTexAtPos(position, trail_tex).rgb, 1.0);
+void handleBounds(inout vec3 pos, inout vec3 vel)
+{
+    vec2 bounds = vec2(aspect, 1.0);
+
+    if (boundary_mode < 0.5)
+    {
+        pos.xy = mod(pos.xy + bounds, 2.0 * bounds) - bounds;
+    }
+    else // BOUNDARY_BOUNCE
+    {
+        if (pos.x > bounds.x)       { pos.x =  2.0 * bounds.x - pos.x; vel.x = -vel.x; }
+        else if (pos.x < -bounds.x) { pos.x = -2.0 * bounds.x - pos.x; vel.x = -vel.x; }
+
+        if (pos.y > bounds.y)       { pos.y =  2.0 * bounds.y - pos.y; vel.y = -vel.y; }
+        else if (pos.y < -bounds.y) { pos.y = -2.0 * bounds.y - pos.y; vel.y = -vel.y; }
+    }
+}
+
+void main() {
+
+    vec4 trail_sample = sampleTexAtPos(position, trail_tex);
+	vec3 new_vel = velocity * drag;
+
+    vec3 new_pos = position + vec3(new_vel.xy * speed, 0.0);
+    
+
+    handleBounds(new_pos, new_vel);
+
+    position_out = new_pos;
+    velocity_out = new_vel;
+    color_out = vec4(new_vel.xy, 0.0, 1.0);
 }
 ]]>
-		</program>
-		<program name="fp" type="fragment">
-		<![CDATA[
+        </program>
+        <program name="fp" type="fragment">
+        <![CDATA[
 #version 330 core
 void main() 
 {
 }
-		]]>
-		</program>
-	</language>
+        ]]>
+        </program>
+    </language>
 </jittershader>
