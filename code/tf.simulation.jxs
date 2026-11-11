@@ -3,7 +3,6 @@
     // TF BUFFERS
     <param name="position" type="vec3" state="POSITION" />
     <param name="velocity" type="vec3" state="NORMAL" />
-    <param name="color" type="vec4" state="COLOR" />
 
     // PARAMETERS
     <param name="speed" type="float" default="0.02" />
@@ -16,7 +15,6 @@
     <language name="glsl" version="1.5">
         <bind param="position" program="vp" />
         <bind param="velocity" program="vp" />
-        <bind param="color" program="vp" />
         <bind param="speed" program="vp" />
         <bind param="drag" program="vp" />
         <bind param="aspect" program="vp" />
@@ -35,11 +33,9 @@ uniform sampler2D trail_tex;
 
 in vec3 position;
 in vec3 velocity;
-in vec4 color;
 
 out vec3 position_out;
 out vec3 velocity_out;
-out vec4 color_out;
 
 const float BOUNDARY_WRAP   = 0;
 const float BOUNDARY_BOUNCE = 1;
@@ -83,7 +79,6 @@ void main() {
 
     position_out = new_pos;
     velocity_out = new_vel;
-    color_out = vec4(new_vel.xy, 0.0, 1.0);
 }
 ]]>
         </program>
