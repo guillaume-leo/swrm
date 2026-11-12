@@ -1,59 +1,42 @@
-<jittershader name="fill-flat-triangles">
+<jittershader name="particle-render">
     <description>Particle render shader</description>
-    <param name="position" type="vec3" state="POSITION" />
+    <param name="state" type="vec4" state="VERTEX_ATTR0" />
     <param name="modelViewProjectionMatrix" type="mat4" state="MODELVIEW_PROJECTION_MATRIX" />
-    <param name="color" type="vec4" state="COLOR" />
-    <param name="normal" type="vec3" state="NORMAL" />
     <language name="glsl" version="1.5">
-        <bind param="position" program="vp" />
+        <bind param="state" program="vp" />
         <bind param="modelViewProjectionMatrix" program="vp" />
-        <bind param="color" program="vp" />
-        <bind param="normal" program="vp" />
         <program name="vp" type="vertex">
 <![CDATA[
 #version 330 core
 uniform mat4 modelViewProjectionMatrix;
-in vec3 position;
-in vec4 color;
-in vec3 normal;
+in vec4 state;      // par instance : xy = pos, zw = vel
 
 out jit_PerVertex {
-    flat vec4 color;
-    vec3 normal;
+    flat vec2 vel;
     flat int id;
 } jit_out;
 
 void main() {
-    gl_Position = modelViewProjectionMatrix * vec4(position.xy, 0., 1.);
-    jit_out.color  = color;
-    jit_out.normal = normal;
-    jit_out.id     = gl_VertexID;
+    gl_Position = modelViewProjectionMatrix * vec4(state.xy, 0., 1.);
+    jit_out.vel = state.zw;
+    jit_out.id  = gl_VertexID;   
 }
 ]]>
         </program>
         <program name="fp" type="fragment">
 <![CDATA[
 #version 330 core
-
 in jit_PerVertex {
-    flat vec4 color;
-    vec3 normal;
+    flat vec2 vel;
     flat int id;
 } jit_in;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal;
 
-float hash11(float n)
-{
-    return fract(sin(n * 127.1) * 43758.5453);
-}
-
 void main() {
-    float h = hash11(float(jit_in.id));
-
-    outColor  = jit_in.id < 99 ? vec4(1.0,0.0,0.0,1.0) : vec4(0.0,1.0,0.0,1.0);
-    outNormal = vec4(jit_in.normal, 1.0);
+    outColor  = jit_in.id < 500000 ? vec4(1.0, 0.0, 0.0, 1.0) : vec4(0.0, 1.0, 0.0, 1.0);
+    outNormal = vec4(jit_in.vel, 0.0, 1.0);
 }
 ]]>
         </program>
