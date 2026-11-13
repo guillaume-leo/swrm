@@ -25,7 +25,8 @@ Each frame, the simulation runs in a loop:
 
 - Particles are split into **cohorts** by index: `cohort = floor(n_cohorts * id / particle_count)`, up to 64 cohorts.
 - A **rule** is a 4D → 4D Fourier function made of 10 centers, each with a `vec4` frequency and a `vec4` amplitude: **80 floats** per rule.
-- Rules live in Max `array` objects and are uploaded as the `cohort_rules` texture (`jit.matrix 4 float32 20 N`, one row per cohort, cell `2i` = frequency `i`, cell `2i+1` = amplitude `i`).
+- Rules are uploaded as the `cohort_rules` texture (`jit.matrix 4 float32 20 65`): row 0 holds a **base rule**, row `c + 1` the **target rule** of cohort `c`. In a row, cell `2i` = frequency `i`, cell `2i+1` = amplitude `i`.
+- Each particle uses `mix(base, target[cohort], mutation)`: at `mutation = 0` every cohort follows the base rule, at `1` each cohort follows its own target, above `1` it extrapolates.
 - Since a rule is a plain list of numbers, a preset is just a set of lists, and moving between two presets is an element-wise interpolation.
 
 ## Repository layout
@@ -55,6 +56,7 @@ Set on the simulation shader with `param <name> <value>`.
 | `n_cohorts` | 1 | Number of cohorts (max 64) |
 | `particle_count` | 1000000 | Total particles (target 1 to 4 million) |
 | `frame` | 0 | Frame counter, `0` resets the simulation |
+| `mutation` | 1.0 | Mix between the base rule (`0`) and each cohort's target rule (`1`) |
 | `sensor_gain` | 19.43 | Multiplier on sensed trail values |
 | `sensor_angle` | 0.25 | Sensor angle, in units of π |
 | `sensor_distance` | 1.0 | Sensor distance ahead of the particle |

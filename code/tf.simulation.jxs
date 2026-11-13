@@ -8,6 +8,9 @@
     <param name="particle_count" type="float" default="1000000" />
     <param name="frame" type="float" default="0" />
 
+    // <!-- RULES -->
+    <param name="mutation" type="float" default="1.0" />
+
     // <!-- SENSORS -->
     <param name="sensor_gain" type="float" default="19.43" />
     <param name="sensor_angle" type="float" default="0.25" />
@@ -34,6 +37,7 @@
         <bind param="n_cohorts" program="vp" />
         <bind param="particle_count" program="vp" />
         <bind param="frame" program="vp" />
+        <bind param="mutation" program="vp" />
         <bind param="sensor_gain" program="vp" />
         <bind param="sensor_angle" program="vp" />
         <bind param="sensor_distance" program="vp" />
@@ -55,6 +59,8 @@ uniform float n_cohorts;
 uniform float particle_count;
 uniform float frame;
 
+uniform float mutation;          // 0 = base rule, 1 = cohort's target rule, >1 extrapolates
+
 uniform float sensor_gain;
 uniform float sensor_angle;      // in units of PI
 uniform float sensor_distance;
@@ -70,7 +76,8 @@ uniform float aspect;
 uniform float boundary_mode;
 
 uniform sampler2D trail_tex;     // xy = deposited velocities
-uniform sampler2D cohort_rules;  // 20 x N, row = cohort, cell 2i = freq_i, 2i+1 = amp_i
+uniform sampler2D cohort_rules;  // 20 x 65, row 0 = base, row c+1 = target of cohort c,
+                                 // cell 2i = freq_i, 2i+1 = amp_i
 
 in vec4 state;   // xy = pos, zw = vel
 out vec4 state_out;
@@ -99,11 +106,17 @@ float hash(vec2 co) {
 
 //------------------------------------ RULES -----------------------------------
 
-// Read the cohort's rule once into local arrays
+// Read the cohort's rule once into local arrays:
+// mix(base, target[cohort], mutation)
 void load_rule(int cohort, out vec4 freq[N_CENTERS], out vec4 amp[N_CENTERS]) {
+    int row = cohort + 1;
     for (int i = 0; i < N_CENTERS; i++) {
-        freq[i] = texelFetch(cohort_rules, ivec2(2 * i,     cohort), 0);
-        amp[i]  = texelFetch(cohort_rules, ivec2(2 * i + 1, cohort), 0);
+        vec4 base_freq = texelFetch(cohort_rules, ivec2(2 * i,     0),   0);
+        vec4 base_amp  = texelFetch(cohort_rules, ivec2(2 * i + 1, 0),   0);
+        vec4 tgt_freq  = texelFetch(cohort_rules, ivec2(2 * i,     row), 0);
+        vec4 tgt_amp   = texelFetch(cohort_rules, ivec2(2 * i + 1, row), 0);
+        freq[i] = mix(base_freq, tgt_freq, mutation);
+        amp[i]  = mix(base_amp,  tgt_amp,  mutation);
     }
 }
 
