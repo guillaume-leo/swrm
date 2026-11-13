@@ -6,10 +6,17 @@
 // cohort_rules texture (4 planes, 20 columns, 65 rows):
 //   slot 0     = base rule      (row 0)
 //   slot c + 1 = target of cohort c (row c + 1)
+//
+// The v8ui box shows every rule as a heatmap (one row per slot, one column per
+// float) and the numeric detail of the selected row. Click a row to select it.
 
 autowatch = 1;
 inlets = 1;
 outlets = 1;
+
+mgraphics.init();
+mgraphics.relative_coords = 0;
+mgraphics.autofill = 0;
 
 //------------------------------------ LAYOUT ----------------------------------
 
@@ -137,26 +144,252 @@ function output() {
     outlet(0, "jit_matrix", matrix.name);
 }
 
+// Every op that changes the rules ends here: send them and refresh the view.
+function rulesChanged() {
+    output();
+    mgraphics.redraw();
+}
+
+//------------------------------------ VIEW ------------------------------------
+
+const VIEW = {
+    pad: 6,
+    label_w: 20,        // row labels (B, 0, 8, 16, ...)
+    header_h: 14,       // center indices above the heatmap
+    base_gap: 3,        // gap between the base row and the cohort rows
+    detail_w: 300,      // numeric detail panel on the right
+    line_h: 15,
+    font: "Arial",
+    font_size: 10,
+};
+
+// Color scale: values are mapped to [-1, 1] by type, then to a diverging map
+const FREQ_RANGE = 3.0;   // base freqs in [-3, 3]
+const AMP_RANGE = 1.5;    // base amps in [-1, 1], targets up to +-2
+
+const COLOR_BG = [0.11, 0.11, 0.12, 1.0];
+const COLOR_ZERO = [0.16, 0.16, 0.17];
+const COLOR_NEG = [0.25, 0.55, 1.0];
+const COLOR_POS = [1.0, 0.55, 0.15];
+const COLOR_TEXT = [0.85, 0.85, 0.85, 1.0];
+const COLOR_DIM = [0.5, 0.5, 0.5, 1.0];
+const COLOR_INACTIVE = [0.11, 0.11, 0.12, 0.7];   // overlay on rows >= n_cohorts
+const COLOR_SELECT = [1.0, 1.0, 1.0, 1.0];
+
+let selected_slot = BASE_SLOT;
+
+function valueColor(v, range) {
+    let t = Math.max(-1, Math.min(1, v / range));
+    const c = t < 0 ? COLOR_NEG : COLOR_POS;
+    t = Math.pow(Math.abs(t), 0.7);
+    return [
+        COLOR_ZERO[0] + (c[0] - COLOR_ZERO[0]) * t,
+        COLOR_ZERO[1] + (c[1] - COLOR_ZERO[1]) * t,
+        COLOR_ZERO[2] + (c[2] - COLOR_ZERO[2]) * t,
+    ];
+}
+
+// Geometry derived from the box size
+function heatmapRect() {
+    const size = mgraphics.size;
+    const x = VIEW.pad + VIEW.label_w;
+    const y = VIEW.pad + VIEW.header_h;
+    const w = Math.max(FLOATS_PER_RULE, size[0] - x - VIEW.detail_w - 2 * VIEW.pad);
+    const h = Math.max(N_SLOTS, size[1] - y - VIEW.pad);
+    const row_h = (h - VIEW.base_gap) / N_SLOTS;
+    return { x: x, y: y, w: w, h: h, col_w: w / FLOATS_PER_RULE, row_h: row_h };
+}
+
+function rowY(hm, slot) {
+    return hm.y + slot * hm.row_h + (slot > BASE_SLOT ? VIEW.base_gap : 0);
+}
+
+function rowAtY(hm, y) {
+    if (y < hm.y + hm.row_h + VIEW.base_gap * 0.5) return BASE_SLOT;
+    return clampInt((y - hm.y - VIEW.base_gap) / hm.row_h, 1, N_SLOTS - 1);
+}
+
+function slotLabel(slot) {
+    return slot === BASE_SLOT ? "base" : "cohort " + (slot - 1);
+}
+
+function isInactive(slot) {
+    return slot > BASE_SLOT && slot - 1 >= n_cohorts_value;
+}
+
+function setColor(c) {
+    mgraphics.set_source_rgba(c[0], c[1], c[2], c.length > 3 ? c[3] : 1.0);
+}
+
+function textRight(str, x_right, y) {
+    const w = mgraphics.text_measure(str)[0];
+    mgraphics.move_to(x_right - w, y);
+    mgraphics.show_text(str);
+}
+
+function textLeft(str, x, y) {
+    mgraphics.move_to(x, y);
+    mgraphics.show_text(str);
+}
+
+function paintHeatmap(hm) {
+    // cells
+    for (let slot = 0; slot < N_SLOTS; slot++) {
+        const y = rowY(hm, slot);
+        const o = ruleOffset(slot);
+        for (let col = 0; col < FLOATS_PER_RULE; col++) {
+            const is_amp = (col % FLOATS_PER_CENTER) >= FLOATS_PER_VEC4;
+            setColor(valueColor(rules[o + col], is_amp ? AMP_RANGE : FREQ_RANGE));
+            mgraphics.rectangle(hm.x + col * hm.col_w, y, hm.col_w + 0.5, hm.row_h + 0.5);
+            mgraphics.fill();
+        }
+    }
+
+    // separators between centers
+    setColor(COLOR_BG);
+    for (let i = 1; i < N_CENTERS; i++) {
+        mgraphics.rectangle(hm.x + i * FLOATS_PER_CENTER * hm.col_w - 0.5, hm.y, 1, hm.h);
+        mgraphics.fill();
+    }
+
+    // inactive cohorts (>= n_cohorts) dimmed
+    if (n_cohorts_value < MAX_COHORTS) {
+        const y0 = rowY(hm, cohortSlot(n_cohorts_value));
+        setColor(COLOR_INACTIVE);
+        mgraphics.rectangle(hm.x, y0, hm.w, hm.y + hm.h - y0);
+        mgraphics.fill();
+    }
+
+    // selection outline
+    setColor(COLOR_SELECT);
+    mgraphics.set_line_width(1);
+    mgraphics.rectangle(hm.x - 0.5, rowY(hm, selected_slot) - 0.5, hm.w + 1, hm.row_h + 1);
+    mgraphics.stroke();
+
+    // center indices
+    setColor(COLOR_DIM);
+    for (let i = 0; i < N_CENTERS; i++) {
+        textLeft(String(i), hm.x + i * FLOATS_PER_CENTER * hm.col_w + 2, hm.y - 4);
+    }
+
+    // row labels: base, every 8th cohort, and the selected row
+    for (let slot = 0; slot < N_SLOTS; slot++) {
+        const c = slot - 1;
+        const show = slot === BASE_SLOT || c % 8 === 0 || slot === selected_slot;
+        if (!show) continue;
+        setColor(slot === selected_slot ? COLOR_TEXT : COLOR_DIM);
+        const label = slot === BASE_SLOT ? "B" : String(c);
+        textRight(label, hm.x - 3, rowY(hm, slot) + hm.row_h * 0.5 + 3.5);
+    }
+}
+
+function paintDetail(hm) {
+    const x0 = hm.x + hm.w + VIEW.pad + 4;
+    const num_w = 33;                     // one number column
+    const idx_w = 16;
+    const gap = 12;                       // between freq and amp blocks
+    const freq_x = x0 + idx_w;
+    const amp_x = freq_x + 4 * num_w + gap;
+    let y = VIEW.pad + 10;
+
+    // title
+    setColor(COLOR_TEXT);
+    let title = slotLabel(selected_slot);
+    if (isInactive(selected_slot)) title += "  (inactive)";
+    textLeft(title, x0, y);
+    setColor(COLOR_DIM);
+    textRight("seed " + seed_value + "   n_cohorts " + n_cohorts_value, amp_x + 4 * num_w, y);
+    y += VIEW.line_h + 2;
+
+    // column headers
+    const comps = ["x", "y", "z", "w"];
+    textLeft("freq", freq_x, y);
+    textLeft("amp", amp_x, y);
+    y += VIEW.line_h - 3;
+    for (let k = 0; k < 4; k++) {
+        textRight(comps[k], freq_x + (k + 1) * num_w, y);
+        textRight(comps[k], amp_x + (k + 1) * num_w, y);
+    }
+    y += VIEW.line_h;
+
+    // one line per center, each number on a swatch of its heatmap color
+    for (let i = 0; i < N_CENTERS; i++) {
+        const o = centerOffset(selected_slot, i);
+        setColor(COLOR_DIM);
+        textLeft(String(i), x0, y);
+        for (let k = 0; k < 4; k++) {
+            const blocks = [[freq_x, rules[o + k], FREQ_RANGE], [amp_x, rules[o + 4 + k], AMP_RANGE]];
+            for (const [bx, v, range] of blocks) {
+                const cx = bx + k * num_w;
+                setColor(valueColor(v, range));
+                mgraphics.rectangle(cx + 2, y - VIEW.line_h + 4, num_w - 2, VIEW.line_h - 1);
+                mgraphics.fill();
+                setColor(COLOR_TEXT);
+                textRight(v.toFixed(2), cx + num_w - 2, y);
+            }
+        }
+        y += VIEW.line_h;
+    }
+}
+
+function paint() {
+    const size = mgraphics.size;
+    setColor(COLOR_BG);
+    mgraphics.rectangle(0, 0, size[0], size[1]);
+    mgraphics.fill();
+
+    mgraphics.select_font_face(VIEW.font);
+    mgraphics.set_font_size(VIEW.font_size);
+
+    const hm = heatmapRect();
+    paintHeatmap(hm);
+    paintDetail(hm);
+}
+
+// Click (or drag) in the heatmap or its labels selects a row
+function selectAt(x, y) {
+    const hm = heatmapRect();
+    if (x > hm.x + hm.w) return;
+    const slot = rowAtY(hm, y);
+    if (slot !== selected_slot) {
+        selected_slot = slot;
+        mgraphics.redraw();
+    }
+}
+
+function onclick(x, y) {
+    selectAt(x, y);
+}
+
+function ondrag(x, y) {
+    selectAt(x, y);
+}
+
+function onresize() {
+    mgraphics.redraw();
+}
+
 //------------------------------------ MESSAGES --------------------------------
 
 // seed <int>: seed used by randomize and derive when no seed is given
 function seed(v) {
     seed_value = Math.floor(v);
+    mgraphics.redraw();
 }
 
 // randomize [seed]: new random base rule. The optional seed also becomes the current seed.
 function randomize(s) {
-    if (s !== undefined) seed(s);
+    if (s !== undefined) seed_value = Math.floor(s);
     randomizeBase();
-    output();
+    rulesChanged();
 }
 
 // derive [seed]: every cohort target (all 64 slots) = base mutated at full scale,
 // each cohort with its own random stream. The live amount is the shader's `mutation`.
 function derive(s) {
-    if (s !== undefined) seed(s);
+    if (s !== undefined) seed_value = Math.floor(s);
     deriveTargets();
-    output();
+    rulesChanged();
 }
 
 // bang: resend the current rules (e.g. after rebuilding the texture)
@@ -168,6 +401,7 @@ function bang() {
 // all 64 target slots are always kept, unused ones are ignored by the shaders.
 function n_cohorts(v) {
     n_cohorts_value = clampInt(v, 1, MAX_COHORTS);
+    mgraphics.redraw();
 }
 
 // dump [cohort]: post the base rule, or a cohort's target rule, to the console
