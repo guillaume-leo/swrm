@@ -1,38 +1,145 @@
 <jittershader name="TF.SIMULATION">
-    <description>My particle simulator</description>
+    <description>Particle simulation driven by per-cohort Fourier rules</description>
     // <!-- TF BUFFER : xy = position, zw = velocity -->
     <param name="state" type="vec4" state="VERTEX_ATTR0" />
 
-    // <!-- PARAMETERS -->
-    <param name="speed" type="float" default="0.005" />
-    <param name="drag" type="float" default="1.0" />
+    // <!-- COHORTS / TIME -->
+    <param name="n_cohorts" type="float" default="1" />
+    <param name="particle_count" type="float" default="1000000" />
+    <param name="frame" type="float" default="0" />
+
+    // <!-- SENSORS -->
+    <param name="sensor_gain" type="float" default="19.43" />
+    <param name="sensor_angle" type="float" default="0.25" />
+    <param name="sensor_distance" type="float" default="1.0" />
+
+    // <!-- FORCES -->
+    <param name="global_force_mult" type="float" default="1.0" />
+    <param name="axial_force" type="float" default="1.0" />
+    <param name="lateral_force" type="float" default="1.0" />
+    <param name="strafe_power" type="float" default="1.0" />
+    <param name="drag" type="float" default="0.95" />
+
+    // <!-- LIFECYCLE / WORLD -->
+    <param name="hazard_rate" type="float" default="0.0" />
     <param name="aspect" type="float" default="1.0" />
     <param name="boundary_mode" type="float" default="0" />
 
-    // <!-- TEXTURES -->
+    // <!-- TEXTURES (unit order = @texture trail_tex cohort_rules) -->
     <param name="trail_tex" type="int" default="0" />
+    <param name="cohort_rules" type="int" default="1" />
+
     <language name="glsl" version="1.5">
         <bind param="state" program="vp" />
-        <bind param="speed" program="vp" />
+        <bind param="n_cohorts" program="vp" />
+        <bind param="particle_count" program="vp" />
+        <bind param="frame" program="vp" />
+        <bind param="sensor_gain" program="vp" />
+        <bind param="sensor_angle" program="vp" />
+        <bind param="sensor_distance" program="vp" />
+        <bind param="global_force_mult" program="vp" />
+        <bind param="axial_force" program="vp" />
+        <bind param="lateral_force" program="vp" />
+        <bind param="strafe_power" program="vp" />
         <bind param="drag" program="vp" />
+        <bind param="hazard_rate" program="vp" />
         <bind param="aspect" program="vp" />
         <bind param="boundary_mode" program="vp" />
         <bind param="trail_tex" program="vp" />
+        <bind param="cohort_rules" program="vp" />
         <program name="vp" type="vertex">
 <![CDATA[
 #version 330 core
-uniform float speed;
+
+uniform float n_cohorts;
+uniform float particle_count;
+uniform float frame;
+
+uniform float sensor_gain;
+uniform float sensor_angle;      // in units of PI
+uniform float sensor_distance;
+
+uniform float global_force_mult;
+uniform float axial_force;
+uniform float lateral_force;
+uniform float strafe_power;
 uniform float drag;
+
+uniform float hazard_rate;
 uniform float aspect;
 uniform float boundary_mode;
-uniform sampler2D trail_tex;
+
+uniform sampler2D trail_tex;     // xy = deposited velocities
+uniform sampler2D cohort_rules;  // 20 x N, row = cohort, cell 2i = freq_i, 2i+1 = amp_i
 
 in vec4 state;   // xy = pos, zw = vel
+out vec4 state_out;
 
-out vec4 state_out;     // xy = pos, zw = vel
+#define PI 3.1415926
+#define N_CENTERS 10
 
-vec4 sampleTexAtPos(vec2 pos, sampler2D tex)
-{
+// Internal normalizations: order of magnitude of force and strafe
+#define FORCE_DIV       200.0
+#define STRAFE_DIV      10.0
+
+//------------------------------------ HASH ------------------------------------
+
+// PCG hash
+uint pcg_hash(uint seed) {
+    uint s = seed * 747796405u + 2891336453u;
+    uint word = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float hash(vec2 co) {
+    uvec2 u = uvec2(floatBitsToUint(co.x), floatBitsToUint(co.y));
+    uint h = pcg_hash(u.x ^ pcg_hash(u.y));
+    return float(h) / float(0xffffffffu);
+}
+
+//------------------------------------ RULES -----------------------------------
+
+// Read the cohort's rule once into local arrays
+void load_rule(int cohort, out vec4 freq[N_CENTERS], out vec4 amp[N_CENTERS]) {
+    for (int i = 0; i < N_CENTERS; i++) {
+        freq[i] = texelFetch(cohort_rules, ivec2(2 * i,     cohort), 0);
+        amp[i]  = texelFetch(cohort_rules, ivec2(2 * i + 1, cohort), 0);
+    }
+}
+
+// Fourier basis evaluation
+vec4 fourier_noise(vec4 freq[N_CENTERS], vec4 amp[N_CENTERS], vec4 signals) {
+    vec4 result = vec4(0.0);
+    for (int i = 0; i < N_CENTERS; i++) {
+        float phase = dot(signals, freq[i]);
+        float phase_offset = 2.0 * float(i) * 0.6283 + amp[i].w * 3.14159;
+        vec4 basis = vec4(
+            sin(phase + phase_offset),
+            cos(phase + phase_offset * 0.7),
+            sin(phase * 2.0 + phase_offset * 1.3),
+            cos(phase * 2.0 + phase_offset * 0.5)
+        );
+        result += amp[i] * basis;
+    }
+    return result;
+}
+
+//------------------------------------ HELPERS ---------------------------------
+
+// rotate p around origin by angle a
+void pR(inout vec2 p, float a) {
+    p = cos(a) * p + sin(a) * vec2(p.y, -p.x);
+}
+
+vec2 safenorm(vec2 p) {
+    return length(p) == 0.0 ? vec2(0.0) : normalize(p);
+}
+
+vec2 y_reflect(vec2 p) {
+    return p * vec2(1.0, -1.0);
+}
+
+vec4 sampleTexAtPos(vec2 pos, sampler2D tex) {
     vec2 uv = pos;
     uv.x = uv.x / aspect;
     uv = uv * 0.5 + 0.5;
@@ -40,8 +147,7 @@ vec4 sampleTexAtPos(vec2 pos, sampler2D tex)
     return texture(tex, uv);
 }
 
-void handleBounds(inout vec2 pos, inout vec2 vel)
-{
+void handleBounds(inout vec2 pos, inout vec2 vel) {
     vec2 bounds = vec2(aspect, 1.0);
 
     if (boundary_mode < 0.5)   // WRAP
@@ -58,18 +164,86 @@ void handleBounds(inout vec2 pos, inout vec2 vel)
     }
 }
 
+//------------------------------------ BEHAVIOR --------------------------------
+
+// Evaluate the rule in the particle's local frame, twice (normal + mirrored)
+// to cancel clockwise/counterclockwise bias.
+void calculate_entity_behavior(vec2 L, vec2 R, vec2 axis,
+                               vec4 freq[N_CENTERS], vec4 amp[N_CENTERS],
+                               out vec2 force, out vec2 strafe) {
+    vec2 forward = safenorm(axis);
+    vec2 left = vec2(forward.y, -forward.x);
+
+    // sensor values in local coordinates (axial, lateral)
+    L = vec2(dot(L, forward), dot(L, left));
+    R = vec2(dot(R, forward), dot(R, left));
+
+    vec4 baseterm   = fourier_noise(freq, amp, vec4(L, R));
+    vec4 mirrorterm = fourier_noise(freq, amp, vec4(y_reflect(R), y_reflect(L)));
+
+    force  = baseterm.xy + y_reflect(mirrorterm.xy);
+    strafe = baseterm.zw + y_reflect(mirrorterm.zw);
+
+    // back to world coordinates
+    force  = forward * force.x  * axial_force + left * force.y  * lateral_force;
+    strafe = forward * strafe.x * axial_force + left * strafe.y * lateral_force;
+}
+
+// Random position over the whole world, tiny random velocity
+vec4 reset_state(float id, float cohort_val) {
+    vec2 r = vec2(hash(vec2(cohort_val, id + 1.0)), hash(vec2(id, cohort_val + 2.0)));
+    vec2 pos = (r * 2.0 - 1.0) * vec2(aspect, 1.0);
+    vec2 vel = 0.01 * 0.005 * (vec2(hash(vec2(cohort_val, id)), hash(vec2(cohort_val, pos.y))) * 2.0 - 1.0);
+    return vec4(pos, vel);
+}
+
+//------------------------------------ MAIN ------------------------------------
+
 void main() {
+    float id = float(gl_VertexID);
+    float cohort_val = n_cohorts * id / particle_count;
+    int cohort = int(clamp(floor(cohort_val), 0.0, n_cohorts - 1.0));
+
+    // frame == 0 resets the simulation; hazard_rate = per-frame reset probability
+    bool hazard_reset = hazard_rate > hash(vec2(id / particle_count, frame));
+    if (frame < 0.5 || hazard_reset) {
+        state_out = reset_state(id, cohort_val);
+        return;
+    }
+
     vec2 pos = state.xy;
     vec2 vel = state.zw;
 
-    vec4 trail_sample = sampleTexAtPos(pos, trail_tex);
+    // sensors
+    float sample_dist = 0.01 * sensor_distance;
+    vec2 orientation = safenorm(vel);
 
-    vec2 new_vel = vel * drag;
-    vec2 new_pos = pos + new_vel * speed;
+    vec2 left_offset  = orientation * sample_dist;
+    vec2 right_offset = orientation * sample_dist;
+    pR(left_offset,   sensor_angle * PI);
+    pR(right_offset, -sensor_angle * PI);
 
-    handleBounds(new_pos, new_vel);
+    vec2 ltap = sampleTexAtPos(pos + left_offset,  trail_tex).xy * sensor_gain;
+    vec2 rtap = sampleTexAtPos(pos + right_offset, trail_tex).xy * sensor_gain;
 
-    state_out = vec4(new_pos, new_vel);
+    // rule
+    vec4 freq[N_CENTERS];
+    vec4 amp[N_CENTERS];
+    load_rule(cohort, freq, amp);
+
+    vec2 force, strafe;
+    calculate_entity_behavior(ltap, rtap, orientation, freq, amp, force, strafe);
+
+    force  *= global_force_mult / FORCE_DIV;
+    strafe *= global_force_mult / STRAFE_DIV;
+
+    // integrate
+    vel = vel * drag + force;
+    pos += vel + strafe * strafe_power;
+
+    handleBounds(pos, vel);
+
+    state_out = vec4(pos, vel);
 }
 ]]>
         </program>
