@@ -10,14 +10,16 @@ SWRM is a real-time particle simulation built in **Max/MSP (Jitter)**. The parti
 
 The goal is to reproduce the behavior of **Fluoddity** (check fluoddity_shader.glsl provided in this repo). Particles deposit their velocity into a field (the trails), sample it with two sensors (left/right), and react according to a **rule**. A rule is a 4D → 4D function built from 10 Fourier centers (a `vec4` frequency plus a `vec4` amplitude). It outputs a force, which changes velocity, and a strafe, which moves the particle directly. Each evaluation runs twice, once in normal and once in mirrored coordinates, to cancel any clockwise/counterclockwise bias. Particles are split into **cohorts** by index, and each cohort has its own rule.
 
-Unlike Fluoddity, rules are **not computed in the simulation shader**. They are generated and edited **on the CPU side, in Max `array` objects**, then converted to a `cohort_rules` texture (`array → jit.matrix → jit.gl.texture`). This makes them editable per cohort (randomize, copy, mutate, load a custom rule) and easy to store in presets and interpolate between presets. The simulation only reads the texture.
+Unlike Fluoddity, rules are **not generated in the simulation shader**. They are generated and edited **on the CPU side, in a `v8` script** (`code/rules.js`). The script holds a **base rule** plus one **target rule** per cohort, and writes them **directly into a `jit.matrix`**, which the patch turns into the `cohort_rules` texture (`v8 → jit.gl.texture`). No Max `array` objects are involved. This makes rules editable per cohort (randomize, copy, mutate, load a custom rule) and easy to store in presets and interpolate between presets.
+
+**Mutation amount is applied in the shader**, as a live uniform `mutation`. Each particle uses `mix(base, target[cohort], mutation)`: at `mutation = 0` every cohort follows the base rule, at `mutation = 1` every cohort follows its own target. This reproduces Fluoddity's `mutation_scale`: if a target is the base mutated at full scale (additive noise on amplitudes, multiplicative noise on frequencies), the mix at `m` is exactly the base mutated at scale `m`. Values above 1 extrapolate past the targets, which is allowed.
 
 Two use cases are targeted:
 
 - **Exploration**: edit cohort rules, highlight a cohort to observe it, save what's interesting as presets.
 - **Live**: rules are recalled from presets, with interpolated transitions between them.
 
-The GPU side is identical in both modes: the texture is re-uploaded only when the rule arrays change. The difference lives in the patch's interface.
+The GPU side is identical in both modes: the texture is re-uploaded only when the rules change. The difference lives in the patch's interface.
 
 ## Target Architecture
 
@@ -27,18 +29,18 @@ The GPU side is identical in both modes: the texture is re-uploaded only when th
           │                                   │
           ▼                                   ▼
    ┌─────────────────────────────────────────────────┐
-   │ rule arrays (Max `array`)                       │
-   │ one rule per cohort = 80 floats                 │
+   │ v8 script code/rules.js                         │
+   │ base rule + one target rule per cohort          │
+   │ writes them into a JitterMatrix 4 float32 20 65 │
    └────────────────────────┬────────────────────────┘
-                            ▼  (on change)
-                 jit.matrix 4 float32 20 N
-                            ▼
+                            ▼  (on change: jit_matrix <name>)
                  jit.gl.texture @name cohort_rules
                             │
           ┌─────────────────┴─────────────────┐
           ▼                                   ▼
  tf.simulation.jxs (jit.gl.tf)        mesh.shader.jxs (render)
-  reads trail_tex + cohort_rules       cohort, highlight
+  reads trail_tex + cohort_rules,      cohort, highlight
+ mix(base, target, mutation)
           │
           ▼
   particle state ──▶ render ──▶ trail_tex (patch loop)
@@ -52,28 +54,31 @@ A rule is a flat list of **80 floats**, in the same order as the texture:
 [ freq0.xyzw, amp0.xyzw, freq1.xyzw, amp1.xyzw, ..., freq9.xyzw, amp9.xyzw ]
 ```
 
-- One rule per cohort, up to 64 cohorts.
-- Because a rule is a plain list of numbers, a preset is just the set of cohort rule lists. Interpolating between two presets is an element-wise linear interpolation. Fourier rules vary continuously with their coefficients, so interpolated rules should produce continuous behavior changes.
+- One base rule, plus one target rule per cohort (up to 64 cohorts). In the script, all rules live in a single `Float32Array(65 * 80)`: slot 0 is the base, cohort `c` is slot `c + 1` (offset `(c + 1) * 80`).
+- The base has its own slot so that every cohort, including cohort 0, can diverge from it, and editing one cohort never moves the others.
+- Because a rule is a plain list of numbers, a preset is just the base plus the set of target rule lists (and the `mutation` value). Interpolating between two presets is an element-wise linear interpolation. Fourier rules vary continuously with their coefficients, so interpolated rules should produce continuous behavior changes.
 
 ### `cohort_rules` Texture Format
 
-- `jit.matrix 4 float32 20 N` uploaded to `jit.gl.texture @name cohort_rules`: `float32`, no filtering, `@rectangle 0`.
-- One row = one cohort. Cell `2i` holds the `frequency` of center `i`, cell `2i+1` its `amplitude` (4 planes = `xyzw`).
-- Shader read: `texelFetch(cohort_rules, ivec2(2*i + k, cohort), 0)`.
+- The script owns a `JitterMatrix(4, "float32", 20, 65)`, filled with `setcell2d`, and sends `jit_matrix <name>` out of its outlet. The patch feeds it to `jit.gl.texture @name cohort_rules`: `float32`, no filtering, `@rectangle 0`.
+- Row 0 = base rule. Row `c + 1` = target rule of cohort `c`.
+- The matrix always has **65 rows**, whatever `n_cohorts` is: unused rows are ignored by the shaders. This avoids resizing the matrix and texture when the cohort count changes.
+- In a row, cell `2i` holds the `frequency` of center `i`, cell `2i+1` its `amplitude` (4 planes = `xyzw`).
+- Shader read, once per particle: `mix(texelFetch(cohort_rules, ivec2(2*i + k, 0), 0), texelFetch(cohort_rules, ivec2(2*i + k, cohort + 1), 0), mutation)`.
 - Particle cohort: `floor(n_cohorts * gl_VertexID / particle_count)`, using the same formula in the simulation and render shaders.
-- Size: at most 20 × 64 cells (5120 floats). Re-uploading every frame during an interpolation is cheap.
+- Size: 20 × 65 cells (5200 floats). Rewriting and re-uploading it every frame during an interpolation is cheap. Changing `mutation` needs no upload at all.
 
-### Edit Operations (CPU side)
+### Edit Operations (CPU side, in the script)
 
-Each operation applies to one target cohort or to all cohorts.
+Each operation is a message to the `v8` object and applies to the base, to one cohort's target, or to all cohort targets.
 
-| op | Effect on target cohort(s) |
+| op | Effect |
 |---|---|
-| `randomize` | New random rule from a seed (Fluoddity's `generate_random_centers`: frequencies biased toward low values in ~[-3, 3], amplitudes in [-1, 1]) |
-| `derive` | Copy of `source`, then mutation. This reproduces Fluoddity, where all cohorts are variants of a single rule |
-| `copy` | Exact copy of `source` |
-| `mutate` | In-place mutation scaled by `mutation_scale` (Fluoddity's `mutate_rule`: additive noise on amplitudes, multiplicative noise on frequencies) |
-| `load` | Set from a custom rule (e.g. imported from Fluoddity's JSON config) |
+| `randomize` | New random rule from a seed (Fluoddity's `generate_random_centers`: frequencies biased toward low values in ~[-3, 3], amplitudes in [-1, 1]). On the base, or on cohort target(s) |
+| `derive` | Target(s) = base mutated at **full scale** (Fluoddity's `mutate_rule` with scale 1: additive noise on amplitudes, multiplicative noise on frequencies). This reproduces Fluoddity, where all cohorts are variants of a single rule; the actual amount is then set live by the `mutation` uniform |
+| `copy` | Exact copy of `source` (base or a cohort target) |
+| `mutate` | In-place nudge of target(s), scaled by an amount given in the message |
+| `load` | Set the base or a target from a custom rule (e.g. imported from Fluoddity's JSON config) |
 
 The random generation does not need to be bit-exact with Fluoddity's GPU hash, but it should use a seeded PRNG so a seed always gives the same rule.
 
@@ -81,12 +86,13 @@ The random generation does not need to be bit-exact with Fluoddity's GPU hash, b
 
 Each step has a checkbox. It is checked when the step is committed, with the commit hash appended: `- [x] **S1. …** (`abc1234`)`.
 
-The work is split into two tracks:
+The work is split into three tracks:
 
-- **Shader track** (`S*`): files in `code/` (`*.jxs`). Can be done now, by the AI.
-- **Patch track** (`P*`): `patchers/main.maxpat`. Done **manually** by the user, later. The AI never edits the patch; it may only describe what to add.
+- **Shader track** (`S*`): shader files in `code/` (`*.jxs`). Done by the AI.
+- **Script track** (`J*`): the `v8` script `code/rules.js`. Done by the AI.
+- **Patch track** (`P*`): `patchers/main.maxpat`. Done **manually** by the user. The AI never edits the patch; it may only describe what to add.
 
-The two tracks meet through the interface defined below. Shader steps can be written before the patch exists, but they can only be tested in Max once the matching patch steps are done.
+The tracks meet through the interfaces defined below. Shader and script steps can be written before the patch exists, but they can only be tested in Max once the matching patch steps are done.
 
 ### Shader ↔ Patch Interface
 
@@ -95,7 +101,8 @@ Everything the patch must provide to the shaders:
 | Name | Type | Used by | Provided by patch as |
 |---|---|---|---|
 | `trail_tex` | sampler2D | simulation | existing trail loop (unchanged) |
-| `cohort_rules` | sampler2D, 20 × N, float32, no filtering | simulation | `jit.gl.texture @name cohort_rules` (see texture format above) |
+| `cohort_rules` | sampler2D, 20 × 65, float32, no filtering | simulation | `jit.gl.texture @name cohort_rules`, fed by the `v8` script (see texture format above) |
+| `mutation` | float (`0` = all cohorts follow the base, `1` = each cohort follows its target) | simulation | `param mutation …` |
 | `n_cohorts` | float | simulation, render | `param n_cohorts …` |
 | `particle_count` | float | simulation, render | `param particle_count …` |
 | `frame` | float | simulation | frame counter, `0` = reset |
@@ -104,6 +111,13 @@ Everything the patch must provide to the shaders:
 | `hazard_rate` | float | simulation | `param …` |
 | `drag`, `aspect`, `boundary_mode` | float | simulation | existing `param …` messages |
 | `highlight_cohort` | float (`-1` = none) | render | `param highlight_cohort …` |
+
+### Script ↔ Patch Interface
+
+The `v8 rules.js` object:
+
+- **Inlet**: messages for the edit ops (`randomize`, `derive`, `copy`, `mutate`, `load`) and settings (`n_cohorts`, `seed`). The mutation amount is not a script setting: it is the shader's `mutation` uniform. Exact message signatures are defined in the script step that adds them.
+- **Outlet 0**: `jit_matrix <name>`, sent whenever the rules change, to connect to `jit.gl.texture @name cohort_rules`.
 
 ### V1 — Simulation driven by the rule texture
 
@@ -116,39 +130,51 @@ Everything the patch must provide to the shaders:
   - integration `vel = vel*drag + force`, then `pos += vel + strafe*strafe_power`, then the existing `handleBounds`;
   - reset when `frame == 0` or according to `hazard_rate`.
 - [x] **S2. Remove Fluoddity's world-scale constants** (`SQRT_WORLD_SIZE`, `38.855`): they are plain fixed multipliers, folded into the defaults of `sensor_gain`, `sensor_distance` and `global_force_mult` (calibrated by eye once the patch is wired). `/400` and `/20` (with the `SQRT_WORLD_SIZE` factor: `/200` and `/10`) stay as internal normalizations. (`3e037f1`)
+- [x] **S3. Mutation in the shader**: add the `mutation` uniform to `code/tf.simulation.jxs`; `load_rule` reads the base (row 0) and the cohort's target (row `cohort + 1`) and mixes them with `mutation`. (`d48fc8f`)
+
+**Script track**
+
+- [ ] **J1. Rule storage** in `code/rules.js`: base + targets in a `Float32Array(65 * 80)`, plus `n_cohorts`.
+- [ ] **J2. `randomize` and `derive` ops** with a seeded PRNG (see Edit Operations): `randomize` on the base, `derive` on all cohort targets.
+- [ ] **J3. Matrix output**: write the rules into the `JitterMatrix 4 float32 20 65` and send `jit_matrix <name>` out of outlet 0, only when the rules change.
 
 **Patch track (manual)**
 
-- [ ] **P1. Rule storage**: rule arrays in Max `array` objects (80 floats per cohort, up to 64 cohorts).
-- [ ] **P2. `randomize` and `derive` ops** with a seeded PRNG (see Edit Operations). The logic may live in a `v8` script in `code/`; the AI can write that script on request, the user integrates it in the patch.
-- [ ] **P3. Rule texture**: `array → jit.matrix 4 float32 20 N → jit.gl.texture @name cohort_rules`, re-uploaded only when the arrays change (to be validated: filling the 4-plane matrix through `v8` or `jit.fill`).
-- [ ] **P4. Simulation wiring**: pass both textures to `jit.gl.tf` (check that `@texture trail_tex cohort_rules` works), add the `param …` messages for the new uniforms, add a frame counter with reset.
+- [ ] **P1. Rule texture**: add `v8 rules.js` and connect its outlet to `jit.gl.texture @name cohort_rules @type float32 @rectangle 0` with filtering off.
+- [ ] **P2. Simulation wiring**: pass both textures to `jit.gl.tf` (check that `@texture trail_tex cohort_rules` works), add the `param …` messages for the new uniforms (including `mutation`), add a frame counter with reset.
 
-**V1 test**: requires S1, S2 and P1–P4.
+**V1 test**: requires S1–S3, J1–J3, P1 and P2.
 
 ### V2 — Per-cohort editing and highlight
 
 **Shader track**
 
-- [ ] **S3. `code/mesh.shader.jxs`**:
+- [ ] **S4. `code/mesh.shader.jxs`**:
   - same cohort formula as the simulation, with `n_cohorts`, `particle_count`, `highlight_cohort` uniforms;
   - a new `layout(location = 2)` output for the highlight;
   - one color per cohort instead of the `id < 500000` test.
 
-**Patch track (manual)**
+**Script track**
 
-- [ ] **P5. `copy` and `mutate` ops**, and every op can target a specific cohort or all cohorts.
-- [ ] **P6. Render wiring**: set the `trail` node to `@capture 3`, route the highlight output, add the `n_cohorts`, `particle_count`, `highlight_cohort` messages to the mesh shader, and a cohort selector in the interface.
-
-**V2 test**: requires S3, P5 and P6.
-
-### V3 — Presets, custom rules, live (patch only)
+- [ ] **J4. `copy` and `mutate` ops**, and every op can target the base, a specific cohort, or all cohorts.
 
 **Patch track (manual)**
 
-- [ ] **P7. Presets**: store and recall the full set of cohort rules (plus the physics parameters) in Max's preset system.
-- [ ] **P8. `load` op** for custom rules (e.g. importing Fluoddity's JSON config format).
-- [ ] **P9. Live mode**: interpolate between presets (element-wise on rule lists and parameters), re-uploading the texture on each interpolation step.
+- [ ] **P3. Render wiring**: set the `trail` node to `@capture 3`, route the highlight output, add the `n_cohorts`, `particle_count`, `highlight_cohort` messages to the mesh shader, add a cohort selector and the edit-op controls in the interface.
+
+**V2 test**: requires S4, J4 and P3.
+
+### V3 — Presets, custom rules, live
+
+**Script track**
+
+- [ ] **J5. Preset support**: expose the full set of rules to Max's preset system (e.g. `getvalueof` / `setvalueof` for `pattr`), and interpolate between two stored rule sets, rewriting the matrix on each interpolation step.
+- [ ] **J6. `load` op** for custom rules (e.g. importing Fluoddity's JSON config format).
+
+**Patch track (manual)**
+
+- [ ] **P4. Presets**: store and recall the rules (through the script) plus the physics parameters and `mutation` in Max's preset system.
+- [ ] **P5. Live mode**: interface to trigger interpolated transitions between presets.
 
 ## Extra informations
 
