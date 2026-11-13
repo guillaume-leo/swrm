@@ -132,7 +132,11 @@ The `v8 rules.js` object:
 - [x] **S2. Remove Fluoddity's world-scale constants** (`SQRT_WORLD_SIZE`, `38.855`): they are plain fixed multipliers, folded into the defaults of `sensor_gain`, `sensor_distance` and `global_force_mult` (calibrated by eye once the patch is wired). `/400` and `/20` (with the `SQRT_WORLD_SIZE` factor: `/200` and `/10`) stay as internal normalizations. (`3e037f1`)
 - [x] **S3. Mutation in the shader**: add the `mutation` uniform to `code/tf.simulation.jxs`; `load_rule` reads the base (row 0) and the cohort's target (row `cohort + 1`) and mixes them with `mutation`. (`d48fc8f`)
 
-**Script track**
+**Script track**  
+  
+Resources:  
+https://docs.cycling74.com/apiref/js/jittermatrix/  
+https://docs.cycling74.com/apiref/js/jitterobject/
 
 - [ ] **J1. Rule storage** in `code/rules.js`: base + targets in a `Float32Array(65 * 80)`, plus `n_cohorts`.
 - [ ] **J2. `randomize` and `derive` ops** with a seeded PRNG (see Edit Operations): `randomize` on the base, `derive` on all cohort targets.
