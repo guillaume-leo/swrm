@@ -114,6 +114,29 @@ function mutatedRule(dstSlot, srcSlot, amount, rng) {
 
 let seed_value = 0;
 
+function randomizeBase() {
+    randomRule(BASE_SLOT, makeRng(seed_value, STREAM_BASE));
+}
+
+function deriveTargets() {
+    for (let c = 0; c < MAX_COHORTS; c++) {
+        mutatedRule(cohortSlot(c), BASE_SLOT, 1.0, makeRng(seed_value, streamCohort(c)));
+    }
+}
+
+//------------------------------------ OUTPUT ----------------------------------
+
+// Same layout as `rules`: 4 planes x 20 columns x 65 rows = 5200 floats
+const MATRIX_COLUMNS = 2 * N_CENTERS;  // 20
+const matrix = new JitterMatrix(FLOATS_PER_VEC4, "float32", MATRIX_COLUMNS, N_SLOTS);
+
+// Copy the rules into the matrix and send it to jit.gl.texture @name cohort_rules.
+// Called by every op that changes the rules, and only by those.
+function output() {
+    matrix.copyarraytomatrix(rules);
+    outlet(0, "jit_matrix", matrix.name);
+}
+
 //------------------------------------ MESSAGES --------------------------------
 
 // seed <int>: seed used by randomize and derive when no seed is given
@@ -124,16 +147,21 @@ function seed(v) {
 // randomize [seed]: new random base rule. The optional seed also becomes the current seed.
 function randomize(s) {
     if (s !== undefined) seed(s);
-    randomRule(BASE_SLOT, makeRng(seed_value, STREAM_BASE));
+    randomizeBase();
+    output();
 }
 
 // derive [seed]: every cohort target (all 64 slots) = base mutated at full scale,
 // each cohort with its own random stream. The live amount is the shader's `mutation`.
 function derive(s) {
     if (s !== undefined) seed(s);
-    for (let c = 0; c < MAX_COHORTS; c++) {
-        mutatedRule(cohortSlot(c), BASE_SLOT, 1.0, makeRng(seed_value, streamCohort(c)));
-    }
+    deriveTargets();
+    output();
+}
+
+// bang: resend the current rules (e.g. after rebuilding the texture)
+function bang() {
+    output();
 }
 
 // n_cohorts <int>: number of active cohorts (1..64). Does not touch the rules:
@@ -162,6 +190,11 @@ function dump(cohort) {
 
 //------------------------------------ INIT ------------------------------------
 
-// Never start with all-zero rules (zero force in the shader)
-randomize();
-derive();
+// Never start with all-zero rules (zero force in the shader).
+// Filled while the script loads; sent on loadbang, once the outlet is connected.
+randomizeBase();
+deriveTargets();
+
+function loadbang() {
+    output();
+}
