@@ -109,13 +109,13 @@ Everything the patch must provide to the shaders:
 
 **Shader track**
 
-- [ ] **S1. Rewrite `code/tf.simulation.jxs`**:
+- [x] **S1. Rewrite `code/tf.simulation.jxs`**: (`3e037f1`)
   - declare the uniforms listed in the interface (simulation column);
   - two sensors reading `trail_tex.xy` (deposited velocities), keeping the current coordinate convention (aspect, `uv.y` flip);
   - the cohort's rule is read from `cohort_rules` once per particle into local arrays (`texelFetch(cohort_rules, ivec2(2*i + k, cohort), 0)`), then passed to `fourier_noise` for both the base and mirror terms (`calculate_entity_behavior` with mirror symmetry);
   - integration `vel = vel*drag + force`, then `pos += vel + strafe*strafe_power`, then the existing `handleBounds`;
   - reset when `frame == 0` or according to `hazard_rate`.
-- [ ] **S2. Remove Fluoddity's world-scale constants** (`SQRT_WORLD_SIZE`, `38.855`): they are plain fixed multipliers, folded into the defaults of `sensor_gain`, `sensor_distance` and `global_force_mult` (calibrated by eye once the patch is wired). `/400` and `/20` (with the `SQRT_WORLD_SIZE` factor: `/200` and `/10`) stay as internal normalizations.
+- [x] **S2. Remove Fluoddity's world-scale constants** (`SQRT_WORLD_SIZE`, `38.855`): they are plain fixed multipliers, folded into the defaults of `sensor_gain`, `sensor_distance` and `global_force_mult` (calibrated by eye once the patch is wired). `/400` and `/20` (with the `SQRT_WORLD_SIZE` factor: `/200` and `/10`) stay as internal normalizations. (`3e037f1`)
 
 **Patch track (manual)**
 
