@@ -142,7 +142,7 @@ https://docs.cycling74.com/apiref/js/jitterobject/
 - [x] **J1. Rule storage** in `code/rules.js`: base + targets in a `Float32Array(65 * 80)`, plus `n_cohorts`. (`9e599ba`)
 - [x] **J2. `randomize` and `derive` ops** with a seeded PRNG (see Edit Operations): `randomize` on the base, `derive` on all cohort targets. (`ea64fb9`)
 - [x] **J3. Matrix output**: write the rules into the `JitterMatrix 4 float32 20 65` (`copyarraytomatrix`) and send `jit_matrix <name>` out of outlet 0, only when the rules change. (`ba525de`)
-- [ ] **J4. Rule view** (`mgraphics`): heatmap of the 65 rules × 80 floats (rows beyond `n_cohorts` greyed out), click to select a row, numeric detail of the selected rule (10 centers, `freq.xyzw` / `amp.xyzw`). Redraw only when the rules or the selection change.
+- [x] **J4. Rule view** (`mgraphics`): heatmap of the 65 rules × 80 floats (rows beyond `n_cohorts` greyed out), click to select a row, numeric detail of the selected rule (10 centers, `freq.xyzw` / `amp.xyzw`). Redraw only when the rules or the selection change. (`48b2325`)
 
 **Patch track (manual)**
 
